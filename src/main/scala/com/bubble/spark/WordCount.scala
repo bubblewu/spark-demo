@@ -22,7 +22,7 @@ object WordCount {
     // 对单词统计结果RDD[(String, Int)]对键（单词）和值（词频）互换，变换后格式为RDD[(Int, String)]
     // sortByKey(false)根据键（词频）进行排序，false为倒序排列
     // 最后，再将RDD[(Int, String)]格式变换为RDD[(String, Int)]
-    val wordSort = wordCount.map(x => (x._2, x._1)).sortByKey(false).map(x => (x._2, x._1))
+    val wordSort = wordCount.map(x => (x._2, x._1)).sortByKey(ascending = false).map(x => (x._2, x._1))
     // 取Top 10
     wordSort.take(10)
     wordSort.saveAsTextFile("output/WordCount")
