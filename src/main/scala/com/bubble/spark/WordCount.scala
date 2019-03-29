@@ -26,7 +26,7 @@ object WordCount {
     // 取Top 10
     wordSort.take(10)
     wordSort.saveAsTextFile("output/WordCount")
-    sc.stop();
+    sc.stop()
   }
 
 }
