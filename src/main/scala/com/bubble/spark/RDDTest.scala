@@ -1,6 +1,9 @@
 package com.bubble.spark
 
+import java.util.Calendar
+
 import org.apache.spark.rdd.RDD
+import org.apache.spark.storage.StorageLevel
 import org.apache.spark.{SparkConf, SparkContext}
 
 /**
@@ -25,7 +28,9 @@ object RDDTest {
     //    partitioner(rdd)
     //    create(sc)
     //    transformBase(sc, rdd)
-    transformKey(sc, rdd)
+    //    transformKey(sc, rdd)
+    //    control(sc, rdd)
+    action(sc, rdd)
 
     sc.stop()
   }
@@ -394,14 +399,126 @@ object RDDTest {
   /**
     * 控制操作
     */
-  def control(): Unit = {
+  def control(sc: SparkContext, rdd: RDD[String]): Unit = {
+    /**
+      * 将RDD持久化到内存或磁盘文件：
+      * - cache操作，是persist的特例，即persist的StorageLevel为MEMORY_ONLY时。
+      * - persist操作，可以指定StorageLevel参数。
+      * - checkpoint检查点，将切断与该RDD之前的依赖"血统"关系，对包含宽依赖对长血统对RDD非常有用，
+      * 可以避免占用过多对系统资源和节点失败情况下重新计算成本过高的问他。
+      */
+    rdd.cache()
+    rdd.persist(StorageLevel.MEMORY_AND_DISK)
+    // 设置检查点的存储位置在HDFS，并使用checkpoint设置检查点，该操作属于懒加载。
+    sc.setCheckpointDir("hdfs://master:9000/test/checkpoint")
+    rdd.checkpoint()
+    // 在遇到行动操作时，进行检查点操作，检查点前为ParallelCollectionRDD[0]，而检查点后为ParallelCollectionRDD[1]
+    rdd.dependencies.head.rdd
 
+    val startTime = Calendar.getInstance.getTimeInMillis.toInt
+    println(rdd.count())
+    val endTime = Calendar.getInstance.getTimeInMillis.toInt
+    println("costs time: " + (endTime - startTime))
+    println(rdd.count())
+    println("costs time: " + (Calendar.getInstance.getTimeInMillis.toInt - endTime))
   }
 
   /**
     * 行动操作
     */
-  def action(): Unit = {
+  def action(sc: SparkContext, rdd: RDD[String]): Unit = {
+    //一、集合标量行动操作
+    /**
+      * - first():T，返回RDD中对第一个元素，不排序。
+      * - count():Long，返回RDD中对元素个数。
+      * - reduce(f:(T,T)=>T):T，根据映射函数f对RDD中对元素进行计算。
+      * - collect():Array[T]，将RDD转换为数组。
+      * - take(num:Int):Array[T]，获取RDD中从0到num-1下标对元素，不排序。
+      * - top(num:Int):Array[T]，从RDD中按指定排序规则（默认降序）返回前num个元素。
+      * - takeOrdered(num:Int):Array[T]，类似于top，和top相反(升序)对顺序返回元素。
+      */
+    rdd.first()
+    rdd.count()
+    rdd.reduce(_ + _)
+    rdd.collect()
+    rdd.take(1)
+    rdd.top(2)
+    rdd.takeOrdered(2)
+
+    /**
+      * - aggregate[U: ClassTag](zeroValue: U)(seqOp: (U, T) => U, combOp: (U, U) => U): U；
+      * aggregate接收两个函数，和一个初始化值。seqOp函数用于聚集每一个分区，combOp用于聚集所有分区聚集后的结果。
+      * 每一个分区的聚集，和最后所有分区的聚集都需要初始化值的参与。
+      * - fold(zeroValue: T)(op: (T, T) => T): T；
+      * flod()函数相比reduce()加了一个初始值参数，之后根据输入函数进行计算。
+      */
+    // 定义rdd1，设置第一个分区包含5、4、3、2、1，第二个分区包含10、9、8、7、6。
+    var rdd1 = sc.makeRDD(1 to 10, 2)
+    rdd1.mapPartitionsWithIndex((index, iter) => {
+      var map = scala.collection.mutable.Map[String, List[Int]]()
+      while (iter.hasNext) {
+        val name = "part_" + index
+        val elem = iter.next()
+        if (map.contains(name)) {
+          var elems = map(name)
+          elems ::= elem
+          map(name) = elems
+        } else {
+          map(name) = List[Int](elem)
+        }
+      }
+      map.iterator
+    }).collect().foreach(println)
+
+    // 先在每个分区中迭代执行(x:Int, y:Int) => x + y，并且zeroValue的值为1，
+    // 即part_0中zeroValue+5+4+3+2+1=16；part_1中zeroValue+10+9+8+7+6=41；
+    // 再将两个分区的结果合并(a: Int, b: Int) => a + b，并且zeroValue的值为1，
+    // 即zeroValue+part_0+part_1=1+16+41=58
+    val result = rdd1.aggregate(1)(
+      { (x: Int, y: Int) => x + y },
+      { (a: Int, b: Int) => a + b }
+    )
+    println(result) // 58
+    // 结果同上面aggregate的第一个例子一样
+    val result2 = rdd1.fold(1)(
+      { (x: Int, y: Int) => x + y }
+    )
+    println(result2) // 58
+
+    /**
+      * - lookup(key: K): Seq[V] 用于(K,V)类型的RDD，指定K值，返回RDD中该K对应的所有V值。
+      * - countByKey():Map[K,Long] 统计RDD[K,V]中每个K的数量。
+      * - foreach[U](f: A => U): Unit 遍历RDD，将f函数应用于每一个元素。
+      * 如对RDD执行foreach只会在Executor端有效而不是Driver端。
+      * 如rdd.foreach(println)，只会在Executor端对stdout打印输出，而在Driver端是看不到的。
+      * - foreachPartition(f: Iterator[T] => Unit): Unit 类似于foreach，只不过是对每一个分区使用f函数。
+      * - sortBy[K](f: (T) => K, ascending: Boolean = true, numPartitions: Int = this.partitions.length) implicit ord: Ordering[K], ctag: ClassTag[K]): RDD[T]
+      * 根据给定对排序k函数将RDD中对元素进行排序
+      **/
+    val rdd20 = sc.makeRDD(Array(("A", 0), ("A", 2), ("B", 1), ("B", 2), ("C", 1)))
+    rdd20.lookup("A").foreach(println)
+
+    // Accumulator累加器
+    var cnt = sc.accumulator(0)
+    rdd1.foreach(x => cnt += x)
+    println(cnt)
+    var cnt2 = sc.accumulator(0)
+    rdd1.foreachPartition(x => cnt2 += x.size)
+    println(cnt2) // 0 + 5 + 5 = 10
+
+    // 定义RDD为键值类型，分别按照键升序排列和值降序排列
+    rdd20.sortBy(x => x).collect().foreach(println)
+    rdd20.sortBy(x => x._2, ascending = false).collect().foreach(println)
+
+
+    // 二、存储行动操作
+    /**
+      * - saveAsTextFile 将RDD以文本文件对格式存储到文件系统，codec参数可以指定压缩的类名。
+      * - saveAsObjectFile 将RDD中的元素序列化成对象存储到文件，对于HDFS，默认采用SequenceFile保存。
+      * -
+      */
+    //    rdd1.saveAsTextFile("")
+    //    rdd1.saveAsObjectFile("")
 
   }
 
