@@ -7,7 +7,8 @@ import org.apache.spark.storage.StorageLevel
 import org.apache.spark.{SparkConf, SparkContext}
 
 /**
-  * ${DESCRIPTION}
+  * Spark中的分布式弹性数据集RDD常用操作
+  * 参考：http://spark.apache.org/docs/1.6.2/programming-guide.html#initializing-spark
   *
   * @author wu gang
   * @since 2019-04-09 09:51
