@@ -1,4 +1,4 @@
-package com.bubble.spark
+package com.bubble.spark.test
 
 import org.apache.spark.{SparkConf, SparkContext}
 
